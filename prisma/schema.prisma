@@ -1,0 +1,647 @@
+// TDR GOLD TREADER - Prisma Database Schema
+// Production-Ready Multi-User AI XAU/USD Trading Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User & Authentication ──────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum AccountStatus {
+  ACTIVE
+  TRADING
+  PAUSED
+  RISK_LOCKED
+  BROKER_DISCONNECTED
+  KYC_REQUIRED
+  SUSPENDED
+}
+
+model User {
+  id                String             @id @default(uuid())
+  email             String             @unique
+  passwordHash      String
+  fullName          String
+  role              UserRole           @default(USER)
+  status            AccountStatus      @default(ACTIVE)
+  isEmailVerified   Boolean            @default(false)
+  emailVerifyToken  String?
+  resetToken        String?
+  resetTokenExpiry  DateTime?
+  twoFactorEnabled  Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  twoFactor         TwoFactorAuth?
+  sessions          Session[]
+  wallet            Wallet?
+  tradingAccounts   TradingAccount[]
+  deposits          Deposit[]
+  withdrawals       Withdrawal[]
+  ledgerEntries     LedgerTransaction[]
+  auditLogs         AuditLog[]
+  adminActions      AdminAction[]      @relation("AdminActionBy")
+  targetedActions   AdminAction[]      @relation("AdminActionTarget")
+  notifications     Notification[]
+
+  @@index([email])
+  @@index([role])
+  @@index([status])
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String    @unique
+  ipAddress    String?
+  userAgent    String?
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model TwoFactorAuth {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secret      String
+  backupCodes String[]
+  isEnabled   Boolean   @default(false)
+  verifiedAt  DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+// ─── Double-Entry Wallet & Ledger ───────────────────────────────────────────
+
+enum LedgerType {
+  DEPOSIT
+  WITHDRAWAL
+  TRADE_RESERVATION
+  TRADE_PROFIT
+  TRADE_LOSS
+  FEE
+  ADJUSTMENT
+  REFUND
+}
+
+enum LedgerStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  CANCELLED
+}
+
+model Wallet {
+  id                 String              @id @default(uuid())
+  userId             String              @unique
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currency           String              @default("USDT")
+  cachedBalance      Decimal             @default(0.00) @db.Decimal(18, 4)
+  tradingAllocation  Decimal             @default(0.00) @db.Decimal(18, 4)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  ledgerEntries      LedgerTransaction[]
+  deposits           Deposit[]
+  withdrawals        Withdrawal[]
+
+  @@index([userId])
+}
+
+model LedgerTransaction {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId    String
+  wallet      Wallet        @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  amount      Decimal       @db.Decimal(18, 4) // Positive = Credit, Negative = Debit
+  currency    String        @default("USDT")
+  type        LedgerType
+  status      LedgerStatus  @default(VERIFIED)
+  reference   String?       @unique // e.g., DEP-123, WDR-456, TRD-789
+  approvedBy  String?
+  approvedAt  DateTime?
+  notes       String?
+  createdAt   DateTime      @default(now())
+
+  @@index([userId])
+  @@index([walletId])
+  @@index([type])
+  @@index([status])
+  @@index([reference])
+}
+
+// ─── Crypto Deposit & Withdrawal System ─────────────────────────────────────
+
+enum DepositStatus {
+  PENDING_VERIFICATION
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+model CryptoNetwork {
+  id                    String        @id @default(uuid())
+  name                  String        // e.g., Tether USD
+  symbol                String        @default("USDT")
+  network               String        // e.g., TRC20, ERC20, BEP20
+  depositAddress        String
+  qrCodeUrl             String?
+  minDeposit            Decimal       @default(10.00) @db.Decimal(18, 4)
+  isEnabled             Boolean       @default(true)
+  confirmationsRequired Int           @default(12)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  deposits              Deposit[]
+  withdrawals           Withdrawal[]
+
+  @@unique([symbol, network])
+  @@index([network])
+  @@index([isEnabled])
+}
+
+model Deposit {
+  id              String         @id @default(uuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId        String
+  wallet          Wallet         @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  cryptoNetworkId String
+  cryptoNetwork   CryptoNetwork  @relation(fields: [cryptoNetworkId], references: [id])
+  amount          Decimal        @db.Decimal(18, 4)
+  currency        String         @default("USDT")
+  txHash          String         @unique
+  proofUrl        String?
+  status          DepositStatus  @default(PENDING_VERIFICATION)
+  adminNotes      String?
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([txHash])
+}
+
+model Withdrawal {
+  id                 String            @id @default(uuid())
+  userId             String
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId           String
+  wallet             Wallet            @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  cryptoNetworkId    String
+  cryptoNetwork      CryptoNetwork     @relation(fields: [cryptoNetworkId], references: [id])
+  amount             Decimal           @db.Decimal(18, 4)
+  currency           String            @default("USDT")
+  destinationAddress String
+  txHash             String?
+  status             WithdrawalStatus  @default(PENDING)
+  adminNotes         String?
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model WalletConfiguration {
+  id                   String   @id @default("default")
+  depositInstructions  String
+  minDepositDefault    Decimal  @default(10.00) @db.Decimal(18, 4)
+  withdrawalFeePercent Decimal  @default(0.50) @db.Decimal(5, 2)
+  updatedAt            DateTime @updatedAt
+}
+
+// ─── Broker & Trading Accounts ──────────────────────────────────────────────
+
+enum BrokerType {
+  EXNESS
+  MT5
+  PAPER
+}
+
+enum BrokerStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum AccountType {
+  DEMO
+  LIVE
+}
+
+model BrokerAccount {
+  id                String             @id @default(uuid())
+  name              String             // e.g. "Exness Real 1", "Exness Demo"
+  brokerType        BrokerType         @default(EXNESS)
+  server            String             // e.g. "Exness-Real10"
+  login             String
+  encryptedPassword String
+  partnerId         String?
+  status            BrokerStatus       @default(DISCONNECTED)
+  lastSyncAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  connections       BrokerConnection[]
+  tradingAccounts   TradingAccount[]
+
+  @@index([brokerType])
+  @@index([status])
+}
+
+model BrokerConnection {
+  id               String         @id @default(uuid())
+  brokerAccountId  String
+  brokerAccount    BrokerAccount  @relation(fields: [brokerAccountId], references: [id], onDelete: Cascade)
+  userId           String
+  mode             AccountType    @default(DEMO)
+  isAuthorized     Boolean        @default(false)
+  linkedAt         DateTime       @default(now())
+
+  @@index([brokerAccountId])
+  @@index([userId])
+}
+
+model TradingAccount {
+  id              String            @id @default(uuid())
+  userId          String
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brokerAccountId String?
+  brokerAccount   BrokerAccount?    @relation(fields: [brokerAccountId], references: [id])
+  accountType     AccountType       @default(DEMO)
+  balance         Decimal           @default(10000.00) @db.Decimal(18, 4)
+  equity          Decimal           @default(10000.00) @db.Decimal(18, 4)
+  usedMargin      Decimal           @default(0.00) @db.Decimal(18, 4)
+  freeMargin      Decimal           @default(10000.00) @db.Decimal(18, 4)
+  currency        String            @default("USD")
+  maxDrawdown     Decimal           @default(0.00) @db.Decimal(5, 2)
+  dailyDrawdown   Decimal           @default(0.00) @db.Decimal(5, 2)
+  isLocked        Boolean           @default(false)
+  lockReason      String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  positions       Position[]
+  orders          Order[]
+  trades          Trade[]
+  drawdownRecords DrawdownRecord[]
+  riskEvents      RiskEvent[]
+
+  @@index([userId])
+  @@index([accountType])
+}
+
+// ─── Orders, Positions & Executions ─────────────────────────────────────────
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  STOP
+}
+
+enum OrderStatus {
+  PENDING
+  FILLED
+  CANCELLED
+  REJECTED
+}
+
+enum PositionStatus {
+  OPEN
+  PARTIALLY_FILLED
+  CLOSED
+  REJECTED
+  ERROR
+}
+
+model Position {
+  id               String          @id @default(uuid())
+  tradingAccountId String
+  tradingAccount   TradingAccount  @relation(fields: [tradingAccountId], references: [id], onDelete: Cascade)
+  symbol           String          @default("XAUUSD")
+  side             TradeSide
+  size             Decimal         @db.Decimal(10, 2) // Lots (1 lot = 100 oz)
+  entryPrice       Decimal         @db.Decimal(10, 2)
+  currentPrice     Decimal         @db.Decimal(10, 2)
+  sl               Decimal?        @db.Decimal(10, 2)
+  tp               Decimal?        @db.Decimal(10, 2)
+  floatingPnl      Decimal         @default(0.00) @db.Decimal(18, 4)
+  margin           Decimal         @default(0.00) @db.Decimal(18, 4)
+  brokerPositionId String?
+  status           PositionStatus  @default(OPEN)
+  openedAt         DateTime        @default(now())
+  closedAt         DateTime?
+
+  trades           Trade[]
+
+  @@index([tradingAccountId])
+  @@index([symbol])
+  @@index([status])
+}
+
+model Order {
+  id               String          @id @default(uuid())
+  tradingAccountId String
+  tradingAccount   TradingAccount  @relation(fields: [tradingAccountId], references: [id], onDelete: Cascade)
+  symbol           String          @default("XAUUSD")
+  side             TradeSide
+  type             OrderType       @default(MARKET)
+  size             Decimal         @db.Decimal(10, 2)
+  requestedPrice   Decimal         @db.Decimal(10, 2)
+  executedPrice    Decimal?        @db.Decimal(10, 2)
+  sl               Decimal?        @db.Decimal(10, 2)
+  tp               Decimal?        @db.Decimal(10, 2)
+  status           OrderStatus     @default(PENDING)
+  reason           String?
+  brokerOrderId    String?
+  createdAt        DateTime        @default(now())
+
+  @@index([tradingAccountId])
+  @@index([status])
+}
+
+model Trade {
+  id                String          @id @default(uuid())
+  positionId        String?
+  position          Position?       @relation(fields: [positionId], references: [id])
+  tradingAccountId  String
+  tradingAccount    TradingAccount  @relation(fields: [tradingAccountId], references: [id], onDelete: Cascade)
+  symbol            String          @default("XAUUSD")
+  side              TradeSide
+  size              Decimal         @db.Decimal(10, 2)
+  entryPrice        Decimal         @db.Decimal(10, 2)
+  exitPrice         Decimal         @db.Decimal(10, 2)
+  pnl               Decimal         @db.Decimal(18, 4)
+  pnlPercent        Decimal         @db.Decimal(5, 2)
+  durationSeconds   Int             @default(0)
+  aiSignalId        String?
+  aiSignal          AISignal?       @relation(fields: [aiSignalId], references: [id])
+  brokerExecutionId String?
+  notes             String?
+  closedAt          DateTime        @default(now())
+
+  executions        TradeExecution[]
+
+  @@index([tradingAccountId])
+  @@index([symbol])
+  @@index([closedAt])
+}
+
+model TradeExecution {
+  id          String    @id @default(uuid())
+  tradeId     String
+  trade       Trade     @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  price       Decimal   @db.Decimal(10, 2)
+  size        Decimal   @db.Decimal(10, 2)
+  brokerId    String?
+  latencyMs   Int?
+  executedAt  DateTime  @default(now())
+
+  @@index([tradeId])
+}
+
+// ─── AI Analysis & Price-Action Engine ──────────────────────────────────────
+
+enum SignalDirection {
+  BUY
+  SELL
+  NO_TRADE
+}
+
+enum SignalStatus {
+  PROPOSED
+  APPROVED
+  REJECTED_BY_RISK
+  EXECUTED
+  EXPIRED
+}
+
+model AISignal {
+  id              String          @id @default(uuid())
+  symbol          String          @default("XAUUSD")
+  direction       SignalDirection
+  bias4h          String          // "Bullish", "Bearish", "Ranging"
+  poi1h           String          // "Demand at 2348.00 + FVG"
+  confirmation15m String          // "Liquidity sweep + CHOCH + displacement"
+  proposedEntry   Decimal?        @db.Decimal(10, 2)
+  stopLoss        Decimal?        @db.Decimal(10, 2)
+  takeProfit      Decimal?        @db.Decimal(10, 2)
+  riskReward      Decimal?        @db.Decimal(5, 2)
+  riskPercent     Decimal?        @db.Decimal(5, 2)
+  confidence      String          // "HIGH", "MODERATE", "LOW"
+  status          SignalStatus    @default(PROPOSED)
+  reason          String          // Technical breakdown or reason for NO_TRADE
+  timeframeAlignment String
+  createdAt       DateTime        @default(now())
+
+  trades          Trade[]
+
+  @@index([symbol])
+  @@index([direction])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AIAnalysis {
+  id                 String    @id @default(uuid())
+  symbol             String    @default("XAUUSD")
+  timeframe          String    // 4h, 1h, 15m
+  bias               String
+  trend              String
+  orderBlocksJson    String    // JSON stringified array of OrderBlock
+  fvgJson            String    // JSON stringified array of FVG
+  liquidityJson      String    // JSON stringified array of Liquidity
+  smcStructuresJson  String    // JSON stringified array of Structures
+  premiumDiscount    String    // Premium / Discount equilibrium metrics
+  createdAt          DateTime  @default(now())
+
+  @@index([symbol])
+  @@index([timeframe])
+  @@index([createdAt])
+}
+
+// ─── Risk Management Engine ─────────────────────────────────────────────────
+
+enum RiskSeverity {
+  INFO
+  WARNING
+  HALT
+  EMERGENCY_LOCK
+}
+
+model RiskSettings {
+  id                      String    @id @default("global")
+  maxRiskPerTrade         Decimal   @default(1.00) @db.Decimal(5, 2) // 1.00%
+  maxDailyLossPercent     Decimal   @default(2.00) @db.Decimal(5, 2) // 2.00%
+  maxWeeklyLossPercent    Decimal   @default(5.00) @db.Decimal(5, 2) // 5.00%
+  maxTotalDrawdownPercent Decimal   @default(10.00) @db.Decimal(5, 2) // 10.00%
+  maxOpenPositions        Int       @default(2)
+  maxTradesPerDay         Int       @default(5)
+  minRiskReward           Decimal   @default(2.00) @db.Decimal(5, 2) // 1:2
+  consecutiveLossLimit    Int       @default(3)
+  isGlobalKillSwitchActive Boolean  @default(false)
+  newsFilterEnabled       Boolean   @default(true)
+  newsWindowMinutes       Int       @default(30)
+  maxSpreadAllowed        Decimal   @default(2.50) @db.Decimal(5, 2) // $2.50 spread max
+  updatedAt               DateTime  @updatedAt
+}
+
+model RiskEvent {
+  id               String          @id @default(uuid())
+  tradingAccountId String
+  tradingAccount   TradingAccount  @relation(fields: [tradingAccountId], references: [id], onDelete: Cascade)
+  eventType        String          // "DAILY_LOSS_BREACH", "CONSECUTIVE_LOSS_HALT", etc.
+  severity         RiskSeverity
+  description      String
+  autoLocked       Boolean         @default(true)
+  resolvedAt       DateTime?
+  createdAt        DateTime        @default(now())
+
+  @@index([tradingAccountId])
+  @@index([severity])
+  @@index([createdAt])
+}
+
+model DrawdownRecord {
+  id               String          @id @default(uuid())
+  tradingAccountId String
+  tradingAccount   TradingAccount  @relation(fields: [tradingAccountId], references: [id], onDelete: Cascade)
+  peakEquity       Decimal         @db.Decimal(18, 4)
+  currentEquity    Decimal         @db.Decimal(18, 4)
+  drawdownPercent  Decimal         @db.Decimal(5, 2)
+  recordedAt       DateTime        @default(now())
+
+  @@index([tradingAccountId])
+  @@index([recordedAt])
+}
+
+// ─── Market Data & News Engine ──────────────────────────────────────────────
+
+model MarketData {
+  id           String    @id @default(uuid())
+  symbol       String    @default("XAUUSD")
+  bid          Decimal   @db.Decimal(10, 2)
+  ask          Decimal   @db.Decimal(10, 2)
+  spread       Decimal   @db.Decimal(10, 2)
+  tickTime     DateTime
+  providerTime DateTime
+  isStale      Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+
+  @@index([symbol])
+  @@index([tickTime])
+}
+
+enum NewsImpact {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model NewsEvent {
+  id            String      @id @default(uuid())
+  title         String
+  country       String      @default("USD")
+  impact        NewsImpact  @default(HIGH)
+  scheduledTime DateTime
+  actual        String?
+  forecast      String?
+  previous      String?
+  blocksTrading Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+
+  @@index([scheduledTime])
+  @@index([impact])
+}
+
+// ─── System, Audit & Compliance ─────────────────────────────────────────────
+
+model AuditLog {
+  id           String    @id @default(uuid())
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id])
+  actorId      String
+  action       String    // e.g. "USER_SIGNIN", "LEDGER_CREDIT", "RISK_LOCK"
+  targetEntity String
+  entityId     String?
+  detailsJson  String?
+  ipAddress    String?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model AdminAction {
+  id           String    @id @default(uuid())
+  adminId      String
+  admin        User      @relation("AdminActionBy", fields: [adminId], references: [id])
+  targetUserId String?
+  targetUser   User?     @relation("AdminActionTarget", fields: [targetUserId], references: [id])
+  actionType   String    // "APPROVE_DEPOSIT", "GLOBAL_KILL_SWITCH", "MANUAL_ADJUSTMENT"
+  reason       String
+  metadataJson String?
+  createdAt    DateTime  @default(now())
+
+  @@index([adminId])
+  @@index([actionType])
+  @@index([createdAt])
+}
+
+model SystemSettings {
+  id          String    @id @default(uuid())
+  key         String    @unique
+  value       String
+  description String?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([key])
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String    // "INFO", "WARNING", "ALERT", "SUCCESS"
+  isRead    Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+}

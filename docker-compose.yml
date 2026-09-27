@@ -1,0 +1,92 @@
+# TDR GOLD TREADER - Docker Compose Local Infrastructure
+version: "3.8"
+
+services:
+  # ─── 1. PostgreSQL Database ────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: tdr-gold-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tdr_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-TdrGoldSecurePass2026!}
+      POSTGRES_DB: ${POSTGRES_DB:-tdr_gold_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tdr_admin} -d ${POSTGRES_DB:-tdr_gold_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tdr-network
+
+  # ─── 2. Redis Cache & Event Broker ─────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: tdr-gold-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tdr-network
+
+  # ─── 3. Backend API & WebSocket Server ─────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: tdr-gold-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tdr_admin}:${POSTGRES_PASSWORD:-TdrGoldSecurePass2026!}@postgres:5432/${POSTGRES_DB:-tdr_gold_db}?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-tdr_gold_treader_jwt_secret_key_2026_super_secure}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tdr-network
+
+  # ─── 4. Frontend Trading Terminal ──────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: tdr-gold-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:4000
+      VITE_WS_URL: ws://localhost:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - tdr-network
+
+volumes:
+  postgres_data:
+    name: tdr_gold_postgres_data
+  redis_data:
+    name: tdr_gold_redis_data
+
+networks:
+  tdr-network:
+    name: tdr_gold_network
+    driver: bridge

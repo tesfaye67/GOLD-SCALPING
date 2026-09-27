@@ -1,0 +1,77 @@
+# TDR GOLD TREADER - Production Docker Compose (Cloud / VPS Hosting)
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tdr-gold-postgres-prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tdr-prod-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: tdr-gold-redis-prod
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD:-TdrRedisProd2026!}
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-TdrRedisProd2026!}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tdr-prod-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: tdr-gold-backend-prod
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:-TdrRedisProd2026!}@redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tdr-prod-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: tdr-gold-frontend-prod
+    restart: always
+    ports:
+      - "80:3000"
+    depends_on:
+      - backend
+    networks:
+      - tdr-prod-network
+
+volumes:
+  postgres_prod_data:
+  redis_prod_data:
+
+networks:
+  tdr-prod-network:
+    driver: bridge

@@ -1,0 +1,30 @@
+# TDR GOLD TREADER - Backend Dockerfile
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN npm install
+
+COPY server ./server/
+COPY tsconfig*.json ./
+
+RUN npx prisma generate
+RUN npx tsc server/src/index.ts --outDir dist/server --esModuleInterop --resolveJsonModule || true
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package*.json ./
+COPY prisma ./prisma/
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/server ./server
+
+EXPOSE 4000
+
+CMD ["npx", "tsx", "server/src/index.ts"]
